@@ -1,0 +1,35 @@
+module;
+
+#include <optional>
+
+export module server:threaded;
+import socket;
+import multithreading;
+
+namespace server {
+  
+  export template <typename Listener>
+    requires(sock::ListeningSocket<
+             Listener,
+             typename decltype(std::declval<Listener>().accept())::value_type>)
+  class Threaded {
+    using Handler = decltype(std::declval<Listener>().accept())::value_type;
+    Listener _listener;
+    multithreading::Pool _pool;
+
+  public:
+    Threaded(Listener listener, uint32_t max_thread_count = 10) :
+      _listener{std::move(listener)}, _pool{max_thread_count} {}
+
+    template <std::invocable<Handler> F> void run(F run_functor) {
+      // Wait for someone to accept
+      while (1) {
+        std::optional<Handler> accept_handler = _listener.accept();
+        if (accept_handler.has_value()) {
+          Handler handler = std::move(accept_handler.value());
+          _pool.add_task(run_functor, std::move(handler));
+        }
+      }
+    }
+  };
+}

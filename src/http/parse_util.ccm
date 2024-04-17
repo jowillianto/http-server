@@ -1,0 +1,31 @@
+module;
+
+#include <string_view>
+#include <vector>
+#include <algorithm>
+
+export module http:parse_util;
+
+namespace http{
+  std::vector<std::string_view> split_on_separator(std::string_view v, std::string_view sep) {
+    std::vector<std::string_view> separated;
+    size_t v_beg_id = 0;
+    while (v_beg_id < v.length()) {
+      size_t sep_pos = v.find(sep, v_beg_id);
+      // Separator not found
+      if (sep_pos == std::string::npos) {
+        separated.emplace_back(std::string_view{v.begin() + v_beg_id, v.end()});
+        break;
+      }
+      separated.emplace_back(std::string_view{v.begin() + v_beg_id, v.begin() + sep_pos});
+      v_beg_id = sep_pos + sep.length();
+    }
+    return separated;
+  }
+  std::string_view strip_whitespace(std::string_view v) {
+    return std::string_view{
+      std::find_if_not(v.begin(), v.end(), isspace),
+      std::find_if_not(v.rbegin(), v.rend(), isspace).base()
+    };
+  }
+}

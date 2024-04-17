@@ -1,0 +1,27 @@
+module;
+
+#include <tuple>
+
+export module multithreading:task;
+
+namespace multithreading{
+  struct Task {
+    virtual void invoke() = 0;
+    virtual ~Task() = default;
+  };
+  
+  template<typename F, typename ...Args> requires ( std::invocable<F, Args... >)
+  struct ParametrizedTask : public Task{
+    private:
+      std::tuple <Args...> _args;
+      F _functor;
+    public:
+      ParametrizedTask(
+        F functor, Args ...args
+      ) : _args{std::forward<Args>(args)...}, _functor{functor}
+      {}
+      void invoke() {
+        std::apply(_functor, std::move(_args));
+      }
+  };
+};

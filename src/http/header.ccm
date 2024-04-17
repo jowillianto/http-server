@@ -1,0 +1,111 @@
+module;
+#include <expected>
+#include <format>
+#include <map>
+#include <stdexcept>
+#include <string>
+#include <numeric>
+#include <string_view>
+export module http:header;
+import :error;
+import :parse_util;
+
+namespace http {
+  /*
+    A class for passing information about a header line around.
+  */
+  export struct HeaderLine {
+    std::string_view name;
+    std::string_view content;
+
+    void validate_name () const;
+    /*
+      Creates a HeaderLine from the given string view.
+      Example :
+        auto header_line = "Content-Type: application/json"
+        http::HeaderLine::from_string(header_line);
+      Caveats:
+        The return value of this function should outlive the argument v.
+    */
+    static std::expected<HeaderLine, http::ParseError> from_string(std::string_view v) noexcept;
+  };
+
+  export class Header {
+  public:
+    using container_t = std::map<std::string, std::string, std::less<>>;
+
+    Header(std::initializer_list<HeaderLine> list = {});
+
+    /*
+      Adds a header into the list of HTTP Header. Throwing an instance of http::ParseError if the
+      header is invalid or if the header already exists in the list of header.
+      Example:
+      Header header;
+      header.add_header({
+        .name : "Content-Type",
+        .content : "application/json"
+      })
+    */
+    void add_header(HeaderLine header_line);
+    /*
+      Removes the header specified by header_name, this will throw if the header is not inside the
+      list of headers.
+    */
+    void remove_header(std::string_view header_name);
+    /*
+      Modifies the header specified by header_name, this will throw if the header is not inside the
+      list of headers.
+    */
+    void modify_header(HeaderLine h);
+    /*
+      Modifies the header specified by header_name, optionally inserting it. This will throw only if
+      the header_name given is an invalid header name.
+    */
+    void add_or_modify_header(HeaderLine header_line);
+
+    /*
+      Tries to obtain the content given a header name.
+    */
+    std::expected<std::string_view, std::out_of_range> get_content(std::string_view header_name
+    ) const noexcept;
+
+    /*
+      Only allow const iteration
+    */
+    container_t::const_iterator begin() const noexcept;
+    /*
+      Only allow const iteration
+    */
+    container_t::const_iterator end() const noexcept;
+
+    static std::expected<Header, ParseError> from_string(std::string_view v) noexcept;
+
+  private:
+    container_t _headers;
+    void _line_to_name_and_content(std::string_view header_line) const noexcept;
+  };
+}
+
+template <> struct std::formatter<http::Header> : std::formatter<std::string>{
+  constexpr auto parse(std::format_parse_context &ctx) {
+    return ctx.begin();
+  }
+  template<class FormatContext>
+  auto format(const http::Header &obj, FormatContext &ctx) const{
+    std::string serialized_header;
+    size_t serialized_length = std::accumulate(
+      obj.begin(),
+      obj.end(),
+      static_cast<size_t>(0),
+      [](size_t prev, const std::pair<const std::string, const std::string> &p) {
+        return prev + (p.first).length() + std::string_view{": "}.length() + (p.first).length() +
+          std::string_view{"\r\n"}.length();
+      }
+    );
+    serialized_header.reserve(serialized_length);
+    for (const auto &[header_name, content] : obj) {
+      serialized_header += std::format("{}: {}\r\n", header_name, content);
+    }
+    return std::formatter<std::string>::format(std::move(serialized_header), ctx);
+  }
+};

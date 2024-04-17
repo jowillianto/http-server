@@ -1,0 +1,93 @@
+module;
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <cerrno>
+#include <format>
+#include <optional>
+#include <source_location>
+#include <string>
+#include <system_error>
+#include <unistd.h>
+
+export module socket:unix;
+import :interface;
+
+namespace sock {
+  /*
+    Unix Socket for handling connection
+  */
+  export class UnixTCPHandler {
+    static constexpr uint32_t default_buffer_size = 1024;
+    int _sock_fd;
+    std::string _address;
+
+  public:
+    // Constructors
+    UnixTCPHandler(int sock_fd, std::string address);
+    UnixTCPHandler(UnixTCPHandler &&handler);
+    UnixTCPHandler &operator=(UnixTCPHandler &&handler);
+
+    // Functions
+    void send(const std::string &msg);
+    std::string recv();
+    std::string recv(uint32_t read_count);
+    std::string recv_until(char x);
+    int unique_id() const;
+
+    /*
+        Closes the connection given to UnixTCPHandler
+      */
+    ~UnixTCPHandler();
+
+    // Invalidate Assignment and Copy constructor (RAII)
+    UnixTCPHandler &operator=(const UnixTCPHandler &) = delete;
+    UnixTCPHandler(const UnixTCPHandler &) = delete;
+  };
+
+  /*
+    Unix Socket for listening
+  */
+  export class UnixTCPListener {
+    int _port_number;
+    std::string _address;
+    int _sock_fd;
+    int _back_log;
+
+    void _throw_exception(
+      const std::string &message,
+      const std::source_location &loc = std::source_location::current()
+    ) {
+      throw std::system_error{
+        std::error_code{errno, std::generic_category()},
+        std::format(
+          "File : {}, Line : {}, Err : {}", loc.file_name(), loc.line(), message
+        )
+      };
+    }
+
+  public:
+    // Construction and Assignment
+    UnixTCPListener(std::string addr, int port_number, int back_log);
+    UnixTCPListener(UnixTCPListener &&listener);
+    UnixTCPListener &operator=(UnixTCPListener &&listener);
+
+    std::optional<UnixTCPHandler> accept() noexcept;
+
+    int port() const;
+    const std::string &address() const;
+
+    ~UnixTCPListener();
+
+    // Deletions
+    /*
+        Copy construction will invalidate RAII. Hence, it is deleted over here.
+      */
+    UnixTCPListener &operator=(const UnixTCPListener &) = delete;
+    UnixTCPListener(const UnixTCPListener &) = delete;
+  };
+
+  static_assert(ListeningSocket<UnixTCPListener, UnixTCPHandler>);
+  static_assert(HandlingSocket<UnixTCPHandler, std::string>);
+}

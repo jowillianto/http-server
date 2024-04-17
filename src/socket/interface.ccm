@@ -1,0 +1,43 @@
+module;
+
+#include <optional>
+
+export module socket:interface;
+
+namespace sock {
+  /**
+    All Socket should use RAII
+  */
+
+  /**
+    This socket is used to handle the incoming requests. 
+  */
+  export template<typename Sock, typename SendT, typename RecT = SendT>
+  concept HandlingSocket = requires (Sock sock) {
+    // Send a payload of type SendT
+    { sock.send(std::declval<const SendT& >()) };
+    // Receive a payload of type RecT
+    { sock.recv() } -> std::same_as<RecT>;
+    // Receive payload with some length
+    { sock.recv(std::declval<uint32_t>()) } -> std::same_as<RecT>;
+    // Receive until some delimiter
+    { sock.recv_until(std::declval<char>()) } -> std::same_as<RecT>;
+    // Get a unique id
+    { sock.unique_id() } -> std::same_as<int>;
+  };
+
+  /**
+    This concepts defines the ListeningSocket where the socket is listening and
+    the accept call can be called on it to handle incoming requests.
+  */
+  export template<
+    typename ListenSock, 
+    typename HandlingSock
+  >
+  concept ListeningSocket = requires (ListenSock sock) {
+    // This should not throw exception
+    noexcept (sock.accept());
+    { sock.accept() } -> std::same_as<std::optional<HandlingSock> >;
+  };
+  
+}

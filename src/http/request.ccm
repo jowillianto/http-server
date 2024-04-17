@@ -1,0 +1,77 @@
+module;
+#include <format>
+#include <string>
+#include <expected>
+export module http:request;
+import :header;
+import :error;
+import :parse_util;
+
+namespace http {
+  enum CommonMethod { HEAD, OPTIONS, GET, PUT, PATCH, DELETE, CONNECT, TRACE };
+
+  export struct Path {
+
+    std::string_view encoded() const noexcept;
+    std::string_view raw() const noexcept;
+    
+    static std::expected<Path, http::ParseError> from_raw(std::string_view raw) noexcept;
+    static std::expected<std::string, http::ParseError> encode(std::string_view raw) noexcept;
+    static std::expected<Path, http::ParseError> from_encoded(std::string_view encoded) noexcept;
+    static std::expected<std::string, http::ParseError> decode(std::string_view encoded) noexcept;
+
+    private:
+      std::string _encoded;
+      std::string _raw;
+
+      Path (std::string encoded, std::string raw);
+  };
+  export struct Method {
+    std::string method;
+    template<CommonMethod m>
+    static Method create() noexcept;
+  };
+  
+  export struct Request {
+    Method method;
+    Path path;
+    Header header;
+
+    Request(Method method, Path path, Header header, std::string content) noexcept;
+    std::string_view get_content() const noexcept;
+    void set_content(std::string v) noexcept;
+    void set_content(std::string v, std::string_view content_type) noexcept;
+
+    static std::expected<http::Request, http::ParseError> from_string(std::string_view v) noexcept;
+
+  private:
+    void _sync_header_and_content_length() noexcept;
+    std::string _content;
+  };
+}
+
+
+template <> struct std::formatter<http::Method> : public std::formatter<std::string_view> {
+  constexpr auto parse(std::format_parse_context &ctx) {
+    return ctx.begin();
+  }
+  template <typename FormatContext> auto format(const http::Method &obj, FormatContext &ctx) const {
+    return std::formatter<std::string_view>::format(obj.method, ctx);
+  }
+};
+
+template <> struct std::formatter<http::Request> {
+  constexpr auto parse(std::format_parse_context &ctx) {
+    return ctx.begin();
+  }
+  template <typename FormatContext> auto format(const http::Request &obj, FormatContext &ctx) const {
+    return std::format_to(
+      ctx.out(),
+      "{} {} HTTP/1.1\r\n{}\r\n{}",
+      obj.method,
+      obj.path.encoded(),
+      obj.header,
+      obj.get_content()
+    );
+  }
+};

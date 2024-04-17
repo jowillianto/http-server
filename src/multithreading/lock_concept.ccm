@@ -1,0 +1,20 @@
+module;
+
+#include <concepts>
+
+export module multithreading:lock_concept;
+
+namespace multithreading{
+  template<typename T>
+  concept Lockable = requires (T mutex){
+    { mutex.lock() } -> std::same_as<void>;
+    { mutex.unlock() } -> std::same_as<void>;
+    { mutex.try_lock() } -> std::same_as<bool>;
+  };
+  template<typename T>
+  concept SharedLockable = requires (T mutex) {
+    { mutex.lock_shared() } -> std::same_as<void>;
+    { mutex.unlock_shared() } -> std::same_as<void>;
+    { mutex.try_lock_shared() } -> std::same_as<bool>;
+  } &&  Lockable<T>;
+}

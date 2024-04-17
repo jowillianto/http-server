@@ -1,0 +1,17 @@
+module;
+#include <exception>
+#include <string>
+export module http:error;
+
+namespace http {
+  export struct ParseError : public std::exception {
+    ParseError(std::string_view msg) : _msg{msg} {}
+    ParseError(std::string msg) : _msg{std::move(msg)} {}
+    const char *what() const noexcept {
+      return _msg.c_str();
+    }
+
+  private:
+    std::string _msg;
+  };
+};

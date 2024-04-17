@@ -1,0 +1,38 @@
+module;
+#include <exception>
+#include <format>
+#include <string>
+#include <type_traits>
+#include <map>
+export module server:middleware;
+import socket;
+import http;
+
+namespace server {
+  export template <sock::HandlingSocket<std::string, std::string> Handler, typename NextMiddleware>
+    requires(
+      std::is_invocable_r_v<http::Response, NextMiddleware, http::Request>,
+      noexcept(std::declval<NextMiddleware>())
+    )
+  struct HTTPMiddleware {
+    HTTPMiddleware(NextMiddleware m) : _m(std::move(m)) {}
+    void operator()(Handler handler) noexcept {
+      std::string req_str = handler.recv();
+      auto req = http::Request::from_string(req_str);
+      try {
+        http::Response resp = _m(req.value());
+        handler.send(std::format("{}", resp));
+      } catch (const std::exception &e) {
+        auto resp = http::Response{
+          http::Status::create<http::StatusCode::HTTP_500_INTERNAL_SERVER_ERROR>(),
+          http::Header{},
+          e.what()
+        };
+        handler.send(std::format("{}", resp));
+      }
+    }
+
+  private:
+    NextMiddleware _m;
+  };
+}
