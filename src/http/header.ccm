@@ -1,111 +1,321 @@
 module;
+#include <algorithm>
 #include <expected>
 #include <format>
-#include <map>
+#include <ranges>
 #include <stdexcept>
-#include <string>
-#include <numeric>
-#include <string_view>
-export module http:header;
+#include <vector>
+export module moderna.http:header;
+import moderna.variant_error;
 import :error;
 import :parse_util;
 
-namespace http {
-  /*
-    A class for passing information about a header line around.
+namespace moderna::http {
+
+  /**
+    Validated header.
   */
-  export struct HeaderLine {
+  export struct header_view;
+
+  /*
+    Owning header
+  */
+  export struct header_entry;
+
+  /*
+    No content header
+  */
+  export struct header_view_no_content;
+
+  template <typename header_e>
+  concept header_t = requires(const header_e h) {
+    std::is_convertible_v<decltype(h.name), std::string_view>;
+    std::is_convertible_v<decltype(h.content), std::string_view>;
+  };
+
+  template <typename header_e>
+  concept ownable_header_t = requires(const header_e h) {
+    { h.as_owned() } -> std::same_as<header_entry>;
+  } && header_t<header_e>;
+
+  /*
+    A structure to hold the contents of a header. This structure is owning, i.e. it holds the heap
+    allocated memory for the header entry.
+  */
+  struct header_entry {
+    std::string name;
+    std::string content;
+
+    /*
+      returns a view for the current entry. Using const std::string& allows this function to be
+      constexpr.
+    */
+    header_view as_view() const noexcept;
+  };
+
+  struct header_view_no_content {
+    std::string_view name;
+
+    /*
+      Set the view to input the content
+   */
+    constexpr header_view set_content(std::string_view content) const noexcept;
+  };
+
+  /*
+    A structure to view the contents of a header with valid entries.
+  */
+  export struct header_view {
     std::string_view name;
     std::string_view content;
 
-    void validate_name () const;
     /*
-      Creates a HeaderLine from the given string view.
-      Example :
-        auto header_line = "Content-Type: application/json"
-        http::HeaderLine::from_string(header_line);
-      Caveats:
-        The return value of this function should outlive the argument v.
+      count the number of entries, this is useful if it is a multi values http header field.
     */
-    static std::expected<HeaderLine, http::ParseError> from_string(std::string_view v) noexcept;
+    constexpr size_t content_count() const noexcept {
+      return std::ranges::count(content, ',') + 1;
+    }
+    /*
+      get a copied owned version of this header.
+    */
+    header_entry as_owned() const {
+      return header_entry{
+        .name{name.begin(), name.end()}, .content{content.begin(), content.end()}
+      };
+    }
+
+    static constexpr std::expected<header_view_no_content, variant_error<parse_error>> vmake(
+      std::string_view name
+    ) noexcept;
+    static constexpr std::expected<header_view, variant_error<parse_error>> vmake(
+      std::string_view name, std::string_view content
+    ) noexcept;
+    static consteval header_view make(std::string_view name, std::string_view content);
+    static consteval header_view_no_content make(std::string_view name);
+    static constexpr std::expected<header_view, variant_error<parse_error>> vmake_from_line(
+      std::string_view line
+    ) noexcept;
+    static consteval header_view make_from_line(std::string_view line);
   };
-
-  export class Header {
-  public:
-    using container_t = std::map<std::string, std::string, std::less<>>;
-
-    Header(std::initializer_list<HeaderLine> list = {});
-
+  /**
+    Abstracts an http header.
+   */
+  export struct header {
     /*
-      Adds a header into the list of HTTP Header. Throwing an instance of http::ParseError if the
-      header is invalid or if the header already exists in the list of header.
-      Example:
-      Header header;
-      header.add_header({
-        .name : "Content-Type",
-        .content : "application/json"
-      })
+      creates an http header from an object that satisfies std::ranges or basically iterable
     */
-    void add_header(HeaderLine header_line);
+    template <std::ranges::range list_t>
+      requires(ownable_header_t<std::ranges::range_value_t<list_t>>)
+    header(list_t list) {
+      // reserve first if the range is sizeable
+      if constexpr (std::ranges::sized_range<list_t>) {
+        __headers.reserve(std::ranges::size(list));
+      }
+      std::ranges::transform(list, std::back_inserter(__headers), [](const auto &h) {
+        return h.as_owned();
+      });
+    }
     /*
-      Removes the header specified by header_name, this will throw if the header is not inside the
-      list of headers.
+      creates an http header from an initializer list.
     */
-    void remove_header(std::string_view header_name);
-    /*
-      Modifies the header specified by header_name, this will throw if the header is not inside the
-      list of headers.
-    */
-    void modify_header(HeaderLine h);
-    /*
-      Modifies the header specified by header_name, optionally inserting it. This will throw only if
-      the header_name given is an invalid header name.
-    */
-    void add_or_modify_header(HeaderLine header_line);
+    template <ownable_header_t entry_t>
+    header(std::initializer_list<entry_t> list) : header(std::ranges::subrange(list)) {}
 
     /*
-      Tries to obtain the content given a header name.
+      add a new header.
     */
-    std::expected<std::string_view, std::out_of_range> get_content(std::string_view header_name
-    ) const noexcept;
+    template <ownable_header_t header_t>
+    std::expected<void, variant_error<std::out_of_range>> add(const header_t &header) {
+      auto it = __find_by_name(header.name);
+      if (it != __headers.end()) return std::unexpected{std::out_of_range{"header already exists"}};
+      __headers.emplace_back(header.as_owned());
+      return {};
+    }
 
     /*
-      Only allow const iteration
+      remove a header
     */
-    container_t::const_iterator begin() const noexcept;
-    /*
-      Only allow const iteration
-    */
-    container_t::const_iterator end() const noexcept;
+    std::expected<header_entry, variant_error<std::out_of_range>> remove(
+      std::string_view header_name
+    ) {
+      auto it = __find_by_name(header_name);
+      if (it == __headers.end()) return std::unexpected{std::out_of_range{"header does not exist"}};
+      auto header_line = std::move(*it);
+      __headers.erase(it);
+      return header_line;
+    }
 
-    static std::expected<Header, ParseError> from_string(std::string_view v) noexcept;
+    /*
+      modify a header
+    */
+    template <ownable_header_t header_t>
+    std::expected<void, variant_error<std::out_of_range>> modify(const header_t &header) {
+      auto it = __find_by_name(header.name);
+      if (it == __headers.end()) return std::unexpected{std::out_of_range{"header does not exist"}};
+      (it->content) = header.content;
+      return {};
+    }
+
+    /*
+      Add or Modify the header
+    */
+    template <ownable_header_t header_t>
+    std::expected<void, variant_error<std::out_of_range>> add_or_modify(const header_t &header) {
+      return modify(header).or_else([&](auto &&e) { return add(header); });
+    }
+
+    /*
+      check if the current header contains the given string.
+    */
+    bool contains(std::string_view header_name) const noexcept {
+      return __find_by_name(header_name) != __headers.end();
+    }
+
+    /*
+      get an entry.
+    */
+    std::expected<header_view, variant_error<std::out_of_range>> get(std::string_view header_name
+    ) const noexcept {
+      auto it = __find_by_name(header_name);
+      if (it == __headers.end()) return std::unexpected{std::out_of_range{"header does not exist"}};
+      return it->as_view();
+    }
+
+    /*
+      get the header size.
+    */
+    size_t size() const {
+      return __headers.size();
+    }
+
+    /*
+      for iterations
+    */
+    std::vector<header_entry>::const_iterator begin() const {
+      return __headers.begin();
+    }
+    std::vector<header_entry>::const_iterator end() const {
+      return __headers.end();
+    }
+
+    /*
+      create the header from string. skips erronous line
+    */
+    static std::expected<header, variant_error<parse_error>> make(std::string_view v) {
+
+      try {
+        return header{std::ranges::transform_view(
+          std::ranges::split_view(v, "\r\n"),
+          [](auto &&line) {
+            return header_view::vmake_from_line(std::string_view{line.begin(), line.end()}).value();
+          }
+        )};
+      } catch (const std::bad_expected_access<variant_error<parse_error>> &e) {
+        return std::unexpected{e.error()};
+      }
+    }
+
+    template <std::ranges::range container_t>
+      requires(std::constructible_from<std::string_view, std::ranges::range_value_t<container_t>>)
+    static std::expected<header, variant_error<parse_error>> make_from_lines(
+      const container_t &header_lines
+    ) {
+      try {
+        return header{std::ranges::transform_view(header_lines, [](const auto &line) {
+          return header_view::vmake_from_line(std::string_view{line}).value();
+        })};
+      } catch (const std::bad_expected_access<variant_error<parse_error>> &e) {
+        return std::unexpected{e.error()};
+      }
+    }
 
   private:
-    container_t _headers;
-    void _line_to_name_and_content(std::string_view header_line) const noexcept;
+    std::vector<header_entry> __headers;
+    std::vector<header_entry>::iterator __find_by_name(std::string_view name) noexcept {
+      return std::ranges::find(__headers, name, [](const auto &h) { return h.name; });
+    }
+    std::vector<header_entry>::const_iterator __find_by_name(std::string_view name) const noexcept {
+      return std::ranges::find(__headers, name, [](const auto &h) { return h.name; });
+    }
   };
 }
 
-template <> struct std::formatter<http::Header> : std::formatter<std::string>{
+template <moderna::http::header_t header_e> struct std::formatter<header_e> {
   constexpr auto parse(std::format_parse_context &ctx) {
     return ctx.begin();
   }
-  template<class FormatContext>
-  auto format(const http::Header &obj, FormatContext &ctx) const{
-    std::string serialized_header;
-    size_t serialized_length = std::accumulate(
-      obj.begin(),
-      obj.end(),
-      static_cast<size_t>(0),
-      [](size_t prev, const std::pair<const std::string, const std::string> &p) {
-        return prev + (p.first).length() + std::string_view{": "}.length() + (p.first).length() +
-          std::string_view{"\r\n"}.length();
-      }
-    );
-    serialized_header.reserve(serialized_length);
-    for (const auto &[header_name, content] : obj) {
-      serialized_header += std::format("{}: {}\r\n", header_name, content);
-    }
-    return std::formatter<std::string>::format(std::move(serialized_header), ctx);
+  template <class FormatContext> auto format(const header_e &obj, FormatContext &ctx) const {
+    return std::format_to(ctx.out(), "{}: {}", obj.name, obj.content);
   }
 };
+template <> struct std::formatter<moderna::http::header> {
+  constexpr auto parse(std::format_parse_context &ctx) {
+    return ctx.begin();
+  }
+  template <class FormatContext>
+  auto format(const moderna::http::header &obj, FormatContext &ctx) const {
+    for (const auto &h : obj) {
+      std::format_to(ctx.out(), "{}\r\n", h);
+    }
+    return ctx.out();
+  }
+};
+
+/*
+  Implementation Section.
+*/
+
+namespace moderna::http {
+  header_view header_entry::as_view() const noexcept {
+    return header_view{std::string_view{name}, std::string_view{content}};
+  }
+  constexpr header_view header_view_no_content::set_content(std::string_view content
+  ) const noexcept {
+    return header_view{name, content};
+  }
+
+  /* static functions to create header */
+  constexpr std::expected<header_view_no_content, variant_error<parse_error>> header_view::vmake(
+    std::string_view name
+  ) noexcept {
+    auto space_it = std::ranges::find_if(name.begin(), name.end(), is_space);
+    if (space_it != name.end()) {
+      return std::unexpected{parse_error{"Header cannot contain space"}};
+    }
+    return header_view_no_content{name};
+  }
+  constexpr std::expected<header_view, variant_error<parse_error>> header_view::vmake(
+    std::string_view name, std::string_view content
+  ) noexcept {
+    return vmake(name).transform([&](const auto &h) { return h.set_content(content); });
+  }
+  consteval header_view header_view::make(std::string_view name, std::string_view content) {
+    auto parsed_header = vmake(name, content);
+    if (!parsed_header) throw parsed_header.error();
+    else
+      return parsed_header.value();
+  }
+  consteval header_view_no_content header_view::make(std::string_view name) {
+    auto parsed_header = vmake(name);
+    if (!parsed_header) throw parsed_header.error();
+    else
+      return parsed_header.value();
+  }
+  constexpr std::expected<header_view, variant_error<parse_error>> header_view::vmake_from_line(
+    std::string_view line
+  ) noexcept {
+    auto name_content_sep_pos = std::ranges::find(line, ':');
+    if (name_content_sep_pos == line.end()) {
+      return std::unexpected{parse_error{"Not valid header string"}};
+    }
+    auto name = strip_space(std::string_view{line.begin(), name_content_sep_pos});
+    auto content = strip_space(std::string_view{name_content_sep_pos + 1, line.end()});
+    return vmake(name, content);
+  }
+  consteval header_view header_view::make_from_line(std::string_view line) {
+    auto parsed_header = vmake_from_line(line);
+    if (!parsed_header) throw parsed_header.error();
+    else
+      return parsed_header.value();
+  }
+}

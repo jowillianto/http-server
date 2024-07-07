@@ -1,0 +1,85 @@
+module;
+#include <curl/curl.h>  
+#include <expected>
+#include <string>
+#include <string_view>
+export module moderna.http:path;
+import :error;
+import moderna.variant_error;
+
+namespace moderna::http {
+  export struct raw_path;
+  export struct raw_path_view;
+  export struct encoded_path;
+  export struct encoded_path_view;
+
+  /*
+    A Path that has not been encoded
+  */
+  export struct raw_path {
+    std::string path;
+    std::expected<encoded_path, variant_error<parse_error>> encode() const;
+    constexpr raw_path_view as_view() const noexcept;
+  };
+  /*
+    A view of the path, i.e. non owning. 
+  */
+  export struct raw_path_view {
+    std::string_view path;
+    std::expected<encoded_path, variant_error<parse_error>> encode() const;
+    raw_path as_owned() const;
+  };
+  /*
+    An encoded version of the http path
+  */
+  export struct encoded_path {
+    std::string path;
+    constexpr encoded_path_view as_view() const noexcept;
+    std::expected<raw_path, variant_error<parse_error>> decode() const;
+  };
+  /*
+    An  encoded version of the http path. 
+  */
+  export struct encoded_path_view {
+    std::string_view path;
+    std::expected<raw_path, variant_error<parse_error>> decode() const;
+    encoded_path as_owned() const;
+  };
+
+  std::expected<encoded_path, variant_error<parse_error>> raw_path_view::encode() const {
+    const auto encoded_value = curl_easy_escape(nullptr, path.data(), path.length());
+    if (encoded_value == NULL) return std::unexpected{parse_error{"Fail to parse data"}};
+    auto encoded = encoded_path{encoded_value};
+    curl_free(encoded_value);
+    return encoded;
+  }
+  std::expected<encoded_path, variant_error<parse_error>> raw_path::encode() const {
+    return as_view().encode();
+  }
+  constexpr raw_path_view raw_path::as_view() const noexcept {
+    return raw_path_view{path};
+  }
+
+  std::expected<raw_path, variant_error<parse_error>> encoded_path_view::decode() const {
+    int output_length = 0;
+    const auto unescaped_value =
+      curl_easy_unescape(nullptr, path.data(), path.length(), &output_length);
+    if (unescaped_value == NULL) return std::unexpected{parse_error{"Fail to parse data"}};
+    auto decoded = raw_path{unescaped_value};
+    curl_free(unescaped_value);
+    return decoded;
+  }
+  std::expected<raw_path, variant_error<parse_error>> encoded_path::decode() const {
+    return as_view().decode();
+  }
+  constexpr encoded_path_view encoded_path::as_view() const noexcept {
+    return encoded_path_view{path};
+  }
+  encoded_path encoded_path_view::as_owned() const {
+    return encoded_path{std::string{path}};
+  }
+  raw_path raw_path_view::as_owned() const {
+    return raw_path{std::string{path}};
+  }
+
+};

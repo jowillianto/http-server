@@ -1,6 +1,0 @@
-module;
-
-export module multithreading;
-export import :pool;
-export import :task;
-export import :lock_concept;

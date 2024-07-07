@@ -1,0 +1,33 @@
+module;
+#include <expected>
+#include <string_view>
+export module moderna.http:method;
+import :error;
+
+namespace moderna::http {
+  export enum class common_method { HEAD, OPTIONS, GET, PUT, PATCH, DELETE, CONNECT, TRACE };
+
+  /**
+    HTTP Methods
+   */
+  export struct method {
+    std::string_view method_name;
+
+    constexpr static std::expected<method, parse_error> make(std::string_view method_str) {
+#define CHECK_AND_MAKE(METHOD_NAME) \
+  if (method_str == METHOD_NAME) return method { \
+      METHOD_NAME \
+    }
+      CHECK_AND_MAKE("HEAD");
+      CHECK_AND_MAKE("OPTIONS");
+      CHECK_AND_MAKE("GET");
+      CHECK_AND_MAKE("PUT");
+      CHECK_AND_MAKE("PATCH");
+      CHECK_AND_MAKE("DELETE");
+      CHECK_AND_MAKE("CONNECT");
+      CHECK_AND_MAKE("TRACE");
+#undef CHECK_AND_MAKE
+      return std::unexpected{parse_error{"No such method"}};
+    }
+  };
+}

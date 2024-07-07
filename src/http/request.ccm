@@ -1,77 +1,146 @@
 module;
-#include <format>
-#include <string>
 #include <expected>
-export module http:request;
+#include <format>
+#include <ranges>
+#include <string_view>
+#include <system_error>
+#include <tuple>
+export module moderna.http:request;
+import moderna.io;
+import moderna.variant_error;
 import :header;
+import :method;
+import :status;
+import :path;
 import :error;
 import :parse_util;
 
-namespace http {
-  enum CommonMethod { HEAD, OPTIONS, GET, PUT, PATCH, DELETE, CONNECT, TRACE };
+namespace moderna::http {
+  /*
+    These functions will not be exported
+  */
 
-  export struct Path {
+  /*
+    Parses the first line in the http request, this will return the method and the path used for
+    the HTTP request.
+  */
+  std::expected<std::tuple<method, encoded_path>, moderna::variant_error<parse_error>>
+  parse_first_line(std::string_view line) {
+    using ret_val_t =
+      std::expected<std::tuple<method, encoded_path>, moderna::variant_error<parse_error>>;
 
-    std::string_view encoded() const noexcept;
-    std::string_view raw() const noexcept;
-    
-    static std::expected<Path, http::ParseError> from_raw(std::string_view raw) noexcept;
-    static std::expected<std::string, http::ParseError> encode(std::string_view raw) noexcept;
-    static std::expected<Path, http::ParseError> from_encoded(std::string_view encoded) noexcept;
-    static std::expected<std::string, http::ParseError> decode(std::string_view encoded) noexcept;
+    /*
+      Strip spacing
+    */
+    auto first_line_cleaned = strip_space(line);
+    auto end_method = std::ranges::find(first_line_cleaned, ' ');
 
-    private:
-      std::string _encoded;
-      std::string _raw;
+    /*
+      Parse the first line to obtain the http method
+    */
+    if (end_method == first_line_cleaned.end())
+      return std::unexpected{parse_error{"method not found"}};
 
-      Path (std::string encoded, std::string raw);
-  };
-  export struct Method {
-    std::string method;
-    template<CommonMethod m>
-    static Method create() noexcept;
-  };
-  
-  export struct Request {
-    Method method;
-    Path path;
-    Header header;
+    /*
+      Now we have the http method.
+    */
+    auto http_method = method::make(std::string_view{first_line_cleaned.begin(), end_method});
+    if (!http_method) return std::unexpected{http_method.error()};
 
-    Request(Method method, Path path, Header header, std::string content) noexcept;
-    std::string_view get_content() const noexcept;
-    void set_content(std::string v) noexcept;
-    void set_content(std::string v, std::string_view content_type) noexcept;
+    /*
+      Parse the http path.
+    */
+    auto after_method = strip_space(std::string_view{end_method + 1, first_line_cleaned.end()});
+    auto end_path = std::ranges::find(after_method, ' ');
+    if (end_path == first_line_cleaned.end()) return std::unexpected{parse_error{"path not found"}};
+    auto path = encoded_path{std::string{after_method.begin(), end_path}};
+    return ret_val_t{std::make_tuple(http_method.value(), path)};
+  }
+  /*
+    HTTP Request
+  */
+  export struct request {
+    method method;
+    encoded_path path;
+    header header;
+    std::string data;
 
-    static std::expected<http::Request, http::ParseError> from_string(std::string_view v) noexcept;
+    request(
+      moderna::http::method http_method,
+      moderna::http::encoded_path request_path,
+      moderna::http::header http_header,
+      std::string body
+    ) :
+      method{std::move(http_method)},
+      path{std::move(request_path)}, header{std::move(http_header)}, data{std::move(body)} {
+      static_cast<void>(http_header.add_or_modify(
+        header_view_no_content{"Content-Length"}.set_content(std::to_string(data.length()))
+      ));
+    }
 
-  private:
-    void _sync_header_and_content_length() noexcept;
-    std::string _content;
+    /*
+      HTTP Content can be very big and it is recommended that parsing is not done all at once.
+    */
+    using error_t =
+      moderna::variant_error<std::system_error, parse_error, content_length_missing_error>;
+    template <moderna::io::readable_file_t file_t>
+    static std::expected<request, error_t> make(file_t &f) {
+      using expected_t = std::expected<request, error_t>;
+      /*
+        Read the first line and cast the error.
+      */
+      return f.readline()
+        .transform_error([](auto &&e) { return e.template cast_to<error_t>(); })
+        .and_then([&](auto &&first_line) {
+          return parse_first_line(std::move(first_line)).transform_error([](auto &&e) {
+            return e.template cast_to<error_t>();
+          });
+        })
+        .and_then([&](auto &&header_path_tuple) {
+          /*
+            Parse the http header
+          */
+          return f.read_line_until([&](auto &&line) { return line == "\r\n"; })
+            .transform_error([](auto &&e) { return e.template cast_to<error_t>(); })
+            .and_then([&](auto &&lines) {
+              return header::make_from_lines(std::ranges::subrange(lines.begin(), lines.end() - 1))
+                .transform_error([](auto &&e) { return e.template cast_to<error_t>(); })
+                .and_then([&](auto &&header) {
+                  // Read the content length from the header
+                  auto content_length = header.get("Content-Length");
+                  size_t i = 0;
+                  if (content_length) i = std::atoi((content_length->content).data());
+                  return f.read_n(i)
+                    .transform_error([](auto &&e) { return e.template cast_to<error_t>(); })
+                    .transform([&](auto &&request_body) {
+                      return request{
+                        std::get<0>(header_path_tuple),
+                        std::get<1>(header_path_tuple),
+                        header,
+                        request_body
+                      };
+                    });
+                });
+            });
+        });
+    }
   };
 }
 
-
-template <> struct std::formatter<http::Method> : public std::formatter<std::string_view> {
+template <> struct std::formatter<moderna::http::request> {
   constexpr auto parse(std::format_parse_context &ctx) {
     return ctx.begin();
   }
-  template <typename FormatContext> auto format(const http::Method &obj, FormatContext &ctx) const {
-    return std::formatter<std::string_view>::format(obj.method, ctx);
-  }
-};
-
-template <> struct std::formatter<http::Request> {
-  constexpr auto parse(std::format_parse_context &ctx) {
-    return ctx.begin();
-  }
-  template <typename FormatContext> auto format(const http::Request &obj, FormatContext &ctx) const {
-    return std::format_to(
+  template <typename format_context>
+  auto format(const moderna::http::request &request, format_context &ctx) const {
+    std::format_to(
       ctx.out(),
       "{} {} HTTP/1.1\r\n{}\r\n{}",
-      obj.method,
-      obj.path.encoded(),
-      obj.header,
-      obj.get_content()
+      request.method.method_name,
+      request.path.path,
+      request.header,
+      request.data
     );
+    return ctx.out();
   }
 };

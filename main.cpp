@@ -1,76 +1,38 @@
-import server;
-import socket;
-import http;
-#include <cassert>
-#include <expected>
-#include <filesystem>
+import moderna.http;
+import moderna.io;
+import moderna.thread_plus;
+import moderna.http.routing;
 #include <format>
-#include <fstream>
-#include <sstream>
-#include <string>
-
-struct DirLoader {
-  DirLoader(std::filesystem::path root_dir) {
-    _root_dir = root_dir;
-    assert(std::filesystem::is_directory(root_dir));
-  }
-  std::expected<std::string, http::Response> sanitize_path(std::string_view path) {
-    auto find_dot_dot = path.find("..");
-    if (find_dot_dot != std::string::npos) {
-      return std::unexpected{http::Response{
-        http::Status::create<http::StatusCode::HTTP_400_BAD_REQUEST>(),
-        http::Header{},
-        std::format(".. cannot exist in path '{}'", path)
-      }};
-    }
-    auto strip_question_mark = std::find(path.begin(), path.end(), '?');
-    return std::string{path.begin() + 1, strip_question_mark};
-  }
-  http::Response read_file_at_path(std::string_view child_path) {
-    auto full_path = _root_dir / child_path;
-    if (std::filesystem::is_regular_file(full_path)) {
-      std::stringstream s;
-      s << std::fstream{full_path, std::ios_base::in}.rdbuf();
-      return http::Response(
-        http::Status::create<http::StatusCode::HTTP_200_OK>(),
-        http::Header{http::HeaderLine{.name = "Content-Type", .content = "text/plain"}},
-        std::move(s.str())
-      );
-    } else if (std::filesystem::is_directory(full_path)) {
-      std::string dir_list;
-      for (const auto &dir : std::filesystem::directory_iterator{full_path}) {
-        dir_list += std::format(
-          R"(<p><a href = "/{}" > {} </a></p>)",
-          std::filesystem::relative(dir.path(), _root_dir).string(),
-          dir.path().filename().string()
-        );
-      }
-      return http::Response{
-        http::Status::create<http::StatusCode::HTTP_200_OK>(),
-        http::Header{{http::HeaderLine{.name = "Content-Type", .content = "text/html"}}},
-        std::move(dir_list)
-      };
-    }
-    return http::Response{
-      http::Status::create<http::StatusCode::HTTP_404_NOT_FOUND>(),
-      http::Header{},
-      std::format("{} cannot be found", child_path)
-    };
-  }
-  http::Response operator()(http::Request &request) {
-    auto child_path = sanitize_path(request.path.raw());
-    if (!child_path.has_value()) return child_path.error();
-    return read_file_at_path(child_path.value());
-  }
-
-private:
-  std::filesystem::path _root_dir;
-};
+#include <print>
 
 int main(int argc, char **argv) {
-  std::string address = argv[1];
-  int port = atoi(argv[2]);
-
-  server::Threaded server{sock::UnixTCPListener{address, port, 20}};
-  server.run(server::HTTPMiddleware<sock::UnixTCPHandler, DirLoader>{DirLoader{argv[3]}});
+  int port = std::atoi(argv[1]);
+  auto pool = moderna::thread_plus::pool{10};
+  auto listener = moderna::io::listener_sock_file::create_tcp_listener(port, 10).value();
+  for (size_t i = 0; i < 10; i += 1) {
+    static_cast<void>(pool.add_task([&]() {
+      while (true) {
+        auto router = moderna::http::router{moderna::http::dir_router::create_router("/").value()};
+        static_cast<void>(
+          listener.accept()
+            .transform_error([](auto &&e) {
+              return e.template cast_to<moderna::http::request::error_t>();
+            })
+            .and_then([&](auto &&acceptor) {
+              return moderna::http::request::make(acceptor.io).and_then([&](auto &&request) {
+                auto resp = router(request);
+                return acceptor.io.write(std::format("{}", resp)).transform_error([](auto &&e) {
+                  return e.template cast_to<moderna::http::request::error_t>();
+                });
+              });
+            })
+            .transform_error([](auto &&e) {
+              std::print(stderr, "{}\n", e.what());
+              return e;
+            })
+        );
+      }
+    }));
+  }
+  pool.join();
 }

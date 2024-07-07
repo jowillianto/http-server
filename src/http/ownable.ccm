@@ -1,0 +1,27 @@
+module;
+#include <concepts>
+export module moderna.semantics;
+
+namespace moderna::semantics {
+  template<typename owner_t> 
+  concept ownable_set_owner_t = requires(const owner_t owner) {
+    { owner.as_view() };
+  };
+  template<typename view_t>
+  concept ownable_set_view_t = requires (const view_t viewer) {
+    { viewer.as_owned() };
+  };
+
+  template<typename owner_t, typename view_t>
+  concept ownable_set_t = requires (const owner_t owner, const view_t viewer) {
+    { owner.as_view() } -> std::same_as<view_t>;
+    { viewer.as_owned() } -> std::same_as<owner_t>;
+  } && ownable_set_owner_t<owner_t> && ownable_set_view_t<view_t>;
+  
+  template<ownable_set_view_t view_t>
+  using ownable_owner_t = decltype(std::declval<view_t>().as_view());
+  
+  template<ownable_set_owner_t owner_t>
+  using ownable_view_t = decltype(std::declval<owner_t>().as_owned());
+  
+}

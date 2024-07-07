@@ -1,17 +1,29 @@
 module;
-#include <exception>
-#include <string>
-export module http:error;
+#include <string_view>
+export module moderna.http:error;
+namespace moderna::http {
 
-namespace http {
-  export struct ParseError : public std::exception {
-    ParseError(std::string_view msg) : _msg{msg} {}
-    ParseError(std::string msg) : _msg{std::move(msg)} {}
-    const char *what() const noexcept {
-      return _msg.c_str();
+  /*
+    parse_error
+    parsing error associated with moderna::http
+  */
+  export struct parse_error {
+    constexpr parse_error(std::string_view msg) : _msg{msg} {}
+    constexpr std::string_view what() const noexcept {
+      return _msg;
     }
 
   private:
-    std::string _msg;
+    std::string_view _msg;
+  };
+
+  export struct content_length_missing_error {
+    constexpr content_length_missing_error(std::string_view msg) : _msg{msg} {}
+    constexpr std::string_view what() const noexcept {
+      return _msg;
+    }
+
+  private:
+    std::string_view _msg;
   };
 };

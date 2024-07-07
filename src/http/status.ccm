@@ -1,14 +1,14 @@
 module;
 #include <expected>
+#include <format>
 #include <string>
 #include <string_view>
-#include <format>
-export module http:status;
+export module moderna.http:status;
 import :error;
 import :parse_util;
 
-namespace http {
-  export enum StatusCode {
+namespace moderna::http {
+  export enum status_code {
     HTTP_100_CONTINUE = 100,
     HTTP_101_SWITCHING_PROTOCOLS = 101,
     HTTP_102_PROCESSING = 102,
@@ -20,7 +20,7 @@ namespace http {
     HTTP_204_NO_CONTENT = 204,
     HTTP_205_RESET_CONTENT = 205,
     HTTP_206_PARTIAL_CONTENT = 206,
-    HTTP_207_MULTI_STATUS = 207,
+    HTTP_207_MULTI_status = 207,
     HTTP_208_ALREADY_REPORTED = 208,
     HTTP_226_IM_USED = 226,
     HTTP_300_MULTIPLE_CHOICES = 300,
@@ -65,7 +65,7 @@ namespace http {
     HTTP_510_NOT_EXTENDED = 510,
     HTTP_511_NETWORK_AUTHENTICATION_REQUIRED = 511
   };
-  export enum StatusCodeClass {
+  export enum status_code_class {
     INFORMATIONAL_RESPONSE,
     SUCCESSFUL,
     REDIRECTION,
@@ -74,21 +74,21 @@ namespace http {
   };
 
   /*
-    A structure representing the HTTP Status System.
+    A structure representing the HTTP status System.
   */
-  export struct Status {
+  export struct status {
     /*
       Initializes http status from a status code and status msg. If you are initializing using a
-      commonly used HTTP Status Code, use Status::create_common instead of this constructor
+      commonly used HTTP status Code, use status::create_common instead of this constructor
     */
-    Status(uint32_t status_code, std::string status_msg) noexcept;
+    status(uint32_t status_code, std::string status_msg) noexcept;
 
     // Returns the code for the current status
     uint32_t code() const noexcept;
     // Returns the message contained for the current status
-    const std::string &msg() const noexcept;
+    std::string_view msg() const noexcept;
     // Return the class of the code for the current status.
-    StatusCodeClass code_class() const noexcept;
+    status_code_class code_class() const noexcept;
 
     /*
       Sets the code for the current HTTP status. This function will also set code_class accordingly.
@@ -99,42 +99,176 @@ namespace http {
     /*
       Sets the code for the current HTTP status and changing the message automatically.
     */
-    template <StatusCode code> void change_code() noexcept;
+    template <status_code code> void change_code() noexcept;
 
     /*
       Creates a status object for a commonly used HTTP code. This includes codes such as 200 OK.
       Example :
-      auto status = Status::create<HTTP_200_OK>();
+      auto status = status::create<HTTP_200_OK>();
       status.code(); // this is 200;
       status.msg(); // this is "OK";
-      status.code_class(); // this is http::StatusCodeClass::SUCCESSFUL
+      status.code_class(); // this is http::status_code_class::SUCCESSFUL
     */
-    template <StatusCode code> static Status create() noexcept;
+    template <status_code code> static status create() noexcept;
     /*
-      Creates a Status object from a status string. This function will not throw the parse error
+      Creates a status object from a status string. This function will not throw the parse error
       usually thrown when a parse error happens.
       Example :
-      auto status = Status::from_string("200 OK");
+      auto status = status::from_string("200 OK");
       status.code(); // this is 200
       status.msg(); // this is "OK"
-      status.code_class(); // this is http::StatusCodeClass::SUCCESSFUL
+      status.code_class(); // this is http::status_code_class::SUCCESSFUL
     */
-    static std::expected<const Status, ParseError> from_string(std::string_view view) noexcept;
+    static std::expected<const status, parse_error> from_string(std::string_view view) noexcept;
 
   private:
     uint32_t _code;
-    StatusCodeClass _code_class;
+    status_code_class _code_class;
     std::string _msg;
     void _classify_code();
   };
 }
 
-template <> struct std::formatter<http::Status> {
-  constexpr auto parse(std::format_parse_context &ctx){
+template <> struct std::formatter<moderna::http::status> {
+  constexpr auto parse(std::format_parse_context &ctx) {
     return ctx.begin();
   }
-  template<class FormatContext>
-  auto format(const http::Status &obj, FormatContext &ctx) const {
+  template <class FormatContext>
+  auto format(const moderna::http::status &obj, FormatContext &ctx) const {
     return std::format_to(ctx.out(), "{} {}", obj.code(), obj.msg());
   }
 };
+
+moderna::http::status::status(uint32_t code, std::string msg) noexcept :
+  _code(code), _msg(std::move(msg)) {
+  _classify_code();
+}
+std::expected<const moderna::http::status, moderna::http::parse_error>
+moderna::http::status::from_string(std::string_view status_string) noexcept {
+  // strip_space Trailing whitespaces.
+  std::string_view cleaned = strip_space(status_string);
+  auto first_sep = std::find(cleaned.begin(), cleaned.end(), ' ');
+  // Space cannot be found. The standard mandates that the status number and message is space
+  // separated.
+  if (first_sep == cleaned.end()) {
+    return std::unexpected{moderna::http::parse_error("ambiguous status code")};
+  }
+  return status{
+    // TODO: Potentially Unsafe since const char* data has no end identifier.
+    static_cast<uint32_t>(std::atoi(std::string_view{cleaned.begin(), first_sep}.data())),
+    std::string{first_sep + 1, cleaned.end()}
+  };
+}
+uint32_t moderna::http::status::code() const noexcept {
+  return _code;
+}
+std::string_view moderna::http::status::msg() const noexcept {
+  return _msg;
+}
+moderna::http::status_code_class moderna::http::status::code_class() const noexcept {
+  return _code_class;
+}
+void moderna::http::status::change_code(uint32_t code, std::string msg) noexcept {
+  _code = code;
+  _msg = std::move(msg);
+  _classify_code();
+}
+void moderna::http::status::status::_classify_code() {
+  if (_code < 100)
+    throw moderna::http::parse_error(std::format("{} is an invalid status code", _code));
+  else if (_code < 200)
+    _code_class = status_code_class::INFORMATIONAL_RESPONSE;
+  else if (_code < 300)
+    _code_class = status_code_class::SUCCESSFUL;
+  else if (_code < 400)
+    _code_class = status_code_class::REDIRECTION;
+  else if (_code < 500)
+    _code_class = status_code_class::CLIENT_ERROR;
+  else if (_code < 600)
+    _code_class = status_code_class::SERVER_ERROR;
+  else
+    throw moderna::http::parse_error(std::format("{} is an invalid status code", _code));
+}
+
+/*
+  HTTP Common Codes Template Specialization Definition
+*/
+
+template <auto N> consteval auto replace_sub_str(char const (&src)[N]) {
+  std::array<char, N> res = {};
+  for (uint32_t i = 0; i < N; i += 1)
+    res[i] = src[i] == '_' ? ' ' : src[i];
+  return res;
+}
+
+#ifndef DECLARE_FOR_COMMON_HTTP
+  #define DECLARE_FOR_COMMON_HTTP(status_name) \
+    template <> \
+    moderna::http::status moderna::http::status::create<moderna::http::status_code::status_name>( \
+    ) noexcept { \
+      constexpr auto msg = replace_sub_str(#status_name); \
+      std::string status_msg{msg.begin() + 9, msg.end()}; \
+      return status{moderna::http::status_code::status_name, std::move(status_msg)}; \
+    } \
+    template <> \
+    void moderna::http::status::change_code<moderna::http::status_code::status_name>() noexcept { \
+      constexpr auto msg = replace_sub_str(#status_name); \
+      _msg = std::string{msg.begin() + 9, msg.end()}; \
+    }
+DECLARE_FOR_COMMON_HTTP(HTTP_100_CONTINUE);
+DECLARE_FOR_COMMON_HTTP(HTTP_101_SWITCHING_PROTOCOLS);
+DECLARE_FOR_COMMON_HTTP(HTTP_102_PROCESSING);
+DECLARE_FOR_COMMON_HTTP(HTTP_103_EARLY_HINTS);
+DECLARE_FOR_COMMON_HTTP(HTTP_200_OK);
+DECLARE_FOR_COMMON_HTTP(HTTP_201_CREATED);
+DECLARE_FOR_COMMON_HTTP(HTTP_202_ACCEPTED);
+DECLARE_FOR_COMMON_HTTP(HTTP_203_NON_AUTHORITATIVE_INFORMATION);
+DECLARE_FOR_COMMON_HTTP(HTTP_204_NO_CONTENT);
+DECLARE_FOR_COMMON_HTTP(HTTP_205_RESET_CONTENT);
+DECLARE_FOR_COMMON_HTTP(HTTP_206_PARTIAL_CONTENT);
+DECLARE_FOR_COMMON_HTTP(HTTP_207_MULTI_status);
+DECLARE_FOR_COMMON_HTTP(HTTP_208_ALREADY_REPORTED);
+DECLARE_FOR_COMMON_HTTP(HTTP_226_IM_USED);
+DECLARE_FOR_COMMON_HTTP(HTTP_300_MULTIPLE_CHOICES);
+DECLARE_FOR_COMMON_HTTP(HTTP_301_MOVED_PERMANENTLY);
+DECLARE_FOR_COMMON_HTTP(HTTP_302_FOUND);
+DECLARE_FOR_COMMON_HTTP(HTTP_303_SEE_OTHER);
+DECLARE_FOR_COMMON_HTTP(HTTP_304_NOT_MODIFIED);
+DECLARE_FOR_COMMON_HTTP(HTTP_305_USE_PROXY);
+DECLARE_FOR_COMMON_HTTP(HTTP_307_TEMPORARY_REDIRECT);
+DECLARE_FOR_COMMON_HTTP(HTTP_308_PERMANENT_REDIRECT);
+DECLARE_FOR_COMMON_HTTP(HTTP_400_BAD_REQUEST);
+DECLARE_FOR_COMMON_HTTP(HTTP_401_UNAUTHORIZED);
+DECLARE_FOR_COMMON_HTTP(HTTP_402_PAYMENT_REQUIRED);
+DECLARE_FOR_COMMON_HTTP(HTTP_403_FORBIDDEN);
+DECLARE_FOR_COMMON_HTTP(HTTP_404_NOT_FOUND);
+DECLARE_FOR_COMMON_HTTP(HTTP_405_METHOD_NOT_ALLOWED);
+DECLARE_FOR_COMMON_HTTP(HTTP_406_NOT_ACCEPTABLE);
+DECLARE_FOR_COMMON_HTTP(HTTP_407_PROXY_AUTHENTICATION_REQUIRED);
+DECLARE_FOR_COMMON_HTTP(HTTP_408_REQUEST_TIMEOUT);
+DECLARE_FOR_COMMON_HTTP(HTTP_409_CONFLICT);
+DECLARE_FOR_COMMON_HTTP(HTTP_410_GONE);
+DECLARE_FOR_COMMON_HTTP(HTTP_411_LENGTH_REQUIRED);
+DECLARE_FOR_COMMON_HTTP(HTTP_412_PRECONDITION_FAILED);
+DECLARE_FOR_COMMON_HTTP(HTTP_413_PAYLOAD_TOO_LARGE);
+DECLARE_FOR_COMMON_HTTP(HTTP_414_URI_TOO_LONG);
+DECLARE_FOR_COMMON_HTTP(HTTP_415_UNSUPPORTED_MEDIA_TYPE);
+DECLARE_FOR_COMMON_HTTP(HTTP_416_RANGE_NOT_SATISFIABLE);
+DECLARE_FOR_COMMON_HTTP(HTTP_417_EXPECTATION_FAILED);
+DECLARE_FOR_COMMON_HTTP(HTTP_421_MISDIRECTED_REQUEST);
+DECLARE_FOR_COMMON_HTTP(HTTP_422_UNPROCESSABLE_ENTITY);
+DECLARE_FOR_COMMON_HTTP(HTTP_423_LOCKED);
+DECLARE_FOR_COMMON_HTTP(HTTP_424_FAILED_DEPENDENCY);
+DECLARE_FOR_COMMON_HTTP(HTTP_500_INTERNAL_SERVER_ERROR);
+DECLARE_FOR_COMMON_HTTP(HTTP_501_NOT_IMPLEMENTED);
+DECLARE_FOR_COMMON_HTTP(HTTP_502_BAD_GATEWAY);
+DECLARE_FOR_COMMON_HTTP(HTTP_503_SERVICE_UNAVAILABLE);
+DECLARE_FOR_COMMON_HTTP(HTTP_504_GATEWAY_TIMEOUT);
+DECLARE_FOR_COMMON_HTTP(HTTP_505_HTTP_VERSION_NOT_SUPPORTED);
+DECLARE_FOR_COMMON_HTTP(HTTP_506_VARIANT_ALSO_NEGOTIATES);
+DECLARE_FOR_COMMON_HTTP(HTTP_507_INSUFFICIENT_STORAGE);
+DECLARE_FOR_COMMON_HTTP(HTTP_508_LOOP_DETECTED);
+DECLARE_FOR_COMMON_HTTP(HTTP_510_NOT_EXTENDED);
+DECLARE_FOR_COMMON_HTTP(HTTP_511_NETWORK_AUTHENTICATION_REQUIRED);
+  #undef DECLARE_FOR_COMMON_HTTP
+#endif

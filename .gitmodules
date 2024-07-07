@@ -1,0 +1,9 @@
+[submodule "libs/variant_error"]
+	path = libs/variant_error
+	url = https://github.com/jowillianto/moderna_variant_error
+[submodule "libs/io"]
+	path = libs/io
+	url = https://github.com/jowillianto/moderna_io
+[submodule "libs/reflect-cpp"]
+	path = libs/reflect-cpp
+	url = https://github.com/getml/reflect-cpp

@@ -1,15 +1,46 @@
 cmake_minimum_required(VERSION 3.28)
-project(http_socket)
+project(moderna_http)
 
 set (CMAKE_CXX_STANDARD 23)
 set (CMAKE_CXX_STANDARD_REQUIRED true)
 set (CMAKE_CXX_SCAN_FOR_MODULES true)
-# add_compile_options("-Werror")
 
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/src)
+if (NOT TARGET ${PROJECT_NAME})
+  find_package(CURL REQUIRED)
+  file (
+    GLOB ${PROJECT_NAME}_src
+    "${CMAKE_CURRENT_LIST_DIR}/src/*/*.ccm"
+  )
+  add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/libs/variant_error)
+  add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../io io)
+  add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/libs/reflect-cpp)
+  add_library (${PROJECT_NAME})
+  target_sources(${PROJECT_NAME}
+    PUBLIC
+      FILE_SET CXX_MODULES FILES
+        ${${PROJECT_NAME}_src}
+  )
+  target_include_directories(moderna_http PRIVATE ${CURL_INCLUDE_DIRS})
+  target_link_libraries(moderna_http 
+    PUBLIC 
+      ${CURL_LIBRARIES} 
+      moderna_variant_error
+      moderna_io
+      reflectcpp
+  )
+endif()
 
-add_executable(http_main EXCLUDE_FROM_ALL ${CMAKE_CURRENT_LIST_DIR}/main.cpp)
-target_link_libraries(http_main 
-  server_server
-)
-target_compile_options(http_main PRIVATE "-Ofast")
+if (EXISTS "${CMAKE_CURRENT_LIST_DIR}/../test-lib/CMakeLists.txt" AND PROJECT_IS_TOP_LEVEL)
+  add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../test-lib test-lib)
+  add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../thread-plus test-plus)
+  include (CTest)
+  moderna_add_test(http_tests ${CMAKE_CURRENT_LIST_DIR}/tests/http_tests.cpp
+    LIBRARIES moderna_http moderna_test_lib
+    SANITIZERS all
+  )
+  moderna_add_test(http_example ${CMAKE_CURRENT_LIST_DIR}/main.cpp
+    LIBRARIES moderna_http moderna_io moderna_thread_plus
+  )
+elseif (PROJECT_IS_TOP_LEVEL)
+  message ( "Clone Moderna Library to Test")
+endif()

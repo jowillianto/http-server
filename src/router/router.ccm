@@ -1,0 +1,117 @@
+module;
+#include <rfl/json.hpp>
+#include <concepts>
+#include <expected>
+#include <filesystem>
+#include <ranges>
+#include <rfl.hpp>
+#include <string_view>
+export module moderna.http.routing;
+import moderna.http;
+import moderna.variant_error;
+namespace moderna::http {
+  template <typename handler_t>
+  concept route_handler_t = requires(handler_t handler) {
+    {
+      handler(std::declval<const moderna::http::request>(), std::declval<std::string_view>())
+    } -> std::same_as<moderna::http::response>;
+  };
+
+  template <route_handler_t F> struct route_handler {
+    F handler;
+    std::string_view sub_route;
+
+    moderna::http::response operator()(
+      const moderna::http::request &request, std::string_view route
+    ) {
+      return handler(request, route);
+    }
+  };
+
+  /*
+    router set
+    a router that handles routing to multiple paths.
+  */
+  template <route_handler_t F> struct router_set {};
+
+  /*
+    router
+    This is the root router, plug any subsequent routers after this router.
+  */
+  export template <route_handler_t handler_t> struct router {
+    router(handler_t handler) : handler{handler} {}
+
+    moderna::http::response operator()(const moderna::http::request &request) {
+      auto decoded_path = request.path.decode();
+      if (!decoded_path)
+        return moderna::http::response(
+          status::create<status_code::HTTP_404_NOT_FOUND>(),
+          header{
+            header_view::make_from_line("Content-Type: text/plain"),
+            header_view::make_from_line("Content-Length: 9")
+          },
+          "NOT FOUND"
+        );
+      return handler(
+        request, std::string_view{(decoded_path->path).begin() + 1, (decoded_path->path).end()}
+      );
+    }
+
+  private:
+    handler_t handler;
+  };
+
+  export struct is_a_directory_error {
+    std::string_view what() const noexcept {
+      return "the given path is a directory";
+    }
+  };
+  /*
+    this routes to directories after a root directory
+  */
+  export struct dir_router {
+
+    moderna::http::response operator()(
+      const moderna::http::request &request, std::string_view route
+    ) {
+      std::filesystem::path relative_path{route};
+      std::filesystem::path absolute_path = __root / route;
+      if (!std::filesystem::exists(absolute_path))
+        return response{
+          status::create<status_code::HTTP_400_BAD_REQUEST>(),
+          header{header_view::make_from_line("Content-Type: text/plain")},
+          "No such directory"
+        };
+      struct dir_entry {
+        std::string name;
+        std::string full_name;
+        bool is_dir;
+      };
+      std::vector<dir_entry> entries;
+      std::ranges::transform(
+        std::filesystem::directory_iterator{absolute_path},
+        std::back_inserter(entries),
+        [&](auto &&path) {
+          auto file_name = path.path().filename();
+          return dir_entry{file_name, (relative_path / file_name).string(), path.is_directory()};
+        }
+      );
+      return response(
+        status::create<status_code::HTTP_200_OK>(),
+        header{header_view::make_from_line("Content-Type: application/json")},
+        rfl::json::write(entries)
+      );
+    }
+
+    static std::expected<dir_router, moderna::variant_error<is_a_directory_error>> create_router(
+      std::filesystem::path dir_path
+    ) {
+      if (!std::filesystem::is_directory(dir_path)) return std::unexpected{is_a_directory_error{}};
+      return dir_router{std::move(dir_path)};
+    }
+
+  private:
+    std::filesystem::path __root;
+    dir_router(std::filesystem::path root_dir) : __root{root_dir} {}
+  };
+}

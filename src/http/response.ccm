@@ -1,66 +1,40 @@
 module;
-#include <expected>
 #include <format>
-#include <string>
-#include <string_view>
-export module http:response;
-import :header;
+export module moderna.http:response;
 import :status;
-import :error;
+import :header;
+namespace moderna::http {
+  export struct response {
+    status status;
+    header header;
+    std::string data;
 
-namespace http {
-  export struct Response {
-    Status status;
-    Header header;
-    /*
-      Construct a Response from a given status, header and content.
-      This is useful if the content is streamed or not yet built.
-    */
-    Response(Status status, Header header, std::string content) noexcept;
-
-    /*
-      Construct a Response object from a response string.
-      Example :
-      auto resp = http::Response::from_string(
-        R"(HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n\r\nHelloWorld)"
-      )
-      resp.content // "HelloWorld"
-      resp.status.code() // 200
-      resp.status.msg() // OK
-      resp.header.get_header("Content-Length") // "10"
-    */
-    static std::expected<Response, http::ParseError> from_string(std::string_view v) noexcept;
-
-    /*
-      Get the contents of the response.
-    */
-    std::string_view get_content() const noexcept;
-
-    /*
-      Set the contents of the response and set Content-Length accordingly. This will not set
-      Content-Type. Call this function with another argument to set content_type
-    */
-    void set_content(std::string v) noexcept;
-    /*
-      Set the contents of the response. This additionally requires content_type which sets the
-      content-type or otherwise defaults to text/plain. This will set the header with content-type.
-    */
-    void set_content(std::string v, std::string_view content_type) noexcept;
-
-  private:
-    void _sync_header_and_content_length() noexcept;
-    std::string _content;
+    response(
+      moderna::http::status http_status, moderna::http::header http_header, std::string data
+    ) :
+      status{std::move(http_status)},
+      header{std::move(http_header)}, data{std::move(data)} {
+      static_cast<void>(header.add_or_modify(
+        header_view_no_content{"Content-Length"}.set_content(std::to_string((this->data).length()))
+      ));
+    }
   };
-}
+};
 
-template <> struct std::formatter<http::Response> {
+template <> struct std::formatter<moderna::http::response> {
   constexpr auto parse(std::format_parse_context &ctx) {
     return ctx.begin();
   }
-  template <typename FormatContext>
-  auto format(const http::Response &obj, FormatContext &ctx) const {
-    return std::format_to(
-      ctx.out(), "HTTP/1.1 {}\r\n{}\r\n{}", obj.status, obj.header, obj.get_content()
+  template <typename format_context>
+  auto format(const moderna::http::response &response, format_context &ctx) const {
+    std::format_to(
+      ctx.out(),
+      "HTTP/1.1 {} {}\r\n{}\r\n{}",
+      response.status.code(),
+      response.status.msg(),
+      response.header,
+      response.data
     );
+    return ctx.out();
   }
 };
