@@ -26,7 +26,6 @@ if (NOT TARGET ${PROJECT_NAME})
       ${CURL_LIBRARIES} 
       moderna_variant_error
       moderna_io
-      moderna_thread_plus
       reflectcpp
   )
 endif()
