@@ -1,0 +1,292 @@
+module;
+#include <concepts>
+#include <expected>
+#include <filesystem>
+#include <string_view>
+#include <chrono>
+#include <print>
+#include <tuple>
+#include <rfl/json.hpp>
+export module moderna.http.middleware;
+import moderna.http;
+import moderna.variant_error;
+namespace moderna::http {
+  export template <typename handler_t>
+  concept router_handler_t = requires(handler_t handler) {
+    {
+      handler(
+        std::declval<const moderna::http::request<std::string> &>(),
+        std::declval<std::string_view>()
+      )
+    } -> std::same_as<moderna::http::response<std::string>>;
+  };
+  export template <typename handler_t, typename req_body_t, typename resp_body_t = req_body_t>
+  concept middleware_t = std::is_invocable_r_v<
+    moderna::http::response<std::string>,
+    handler_t,
+    const moderna::http::request<std::string> &>;
+
+  template <router_handler_t F> struct route_handler {
+    F handler;
+    std::string_view sub_route;
+
+    moderna::http::response<std::string> operator()(
+      const moderna::http::request<std::string> &request, std::string_view route
+    ) {
+      return handler(request, route);
+    }
+  };
+
+  /*
+    router set
+    a router that handles routing to multiple paths.
+  */
+  export template <router_handler_t... handlers_t> struct router_set {
+    constexpr router_set(std::tuple<handlers_t...> handlers) : handlers{handlers} {}
+    template <router_handler_t new_handler_t>
+    constexpr void add_route(std::string_view route, new_handler_t handler) {
+      return router_set{std::tuple_cat(handlers, {handler})};
+    }
+    moderna::http::response<std::string> operator()(
+      const moderna::http::request<std::string> &request, std::string_view route
+    ) {
+      return __invoke_handler(request, route);
+    }
+
+  private:
+    std::tuple<route_handler<handlers_t>...> handlers;
+
+    template <size_t i = 0>
+    moderna::http::response<std::string> __invoke_handler(
+      const moderna::http::request<std::string> &request, std::string_view route
+    ) {
+      auto handler = std::get<i>(handlers);
+      if (__match_path(route, handler.sub_route)) {
+        return std::invoke(handler, request, route);
+      } else if constexpr (i != sizeof...(handlers_t)) {
+        return __invoke_handler<i + 1>(request, route);
+      } else {
+        return moderna::http::response<std::string>{
+          status::create<status_code::HTTP_404_NOT_FOUND>(), ""
+        };
+      }
+    }
+
+    bool __match_path(std::string_view rec_route, std::string_view pattern) {
+      return rec_route.starts_with(pattern);
+    }
+  };
+
+  /*
+    router
+    This is the root router, plug any subsequent routers after this router.
+  */
+  export template <router_handler_t handler_t> struct router {
+    constexpr router(handler_t handler) : handler{handler} {}
+
+    moderna::http::response<std::string> operator()(
+      const moderna::http::request<std::string> &request
+    ) {
+      auto decoded_path = request.path.decode();
+      if (!decoded_path)
+        return moderna::http::response<std::string>(
+          status::create<status_code::HTTP_404_NOT_FOUND>(), std::string{"NOT FOUND"}
+        );
+      return handler(
+        request, std::string_view{(decoded_path->path).begin() + 1, (decoded_path->path).end()}
+      );
+    }
+
+  private:
+    handler_t handler;
+  };
+
+  export struct is_a_directory_error {
+    std::string_view what() const noexcept {
+      return "the given path is a directory";
+    }
+  };
+  /*
+    this routes to directories after a root directory
+  */
+  export struct dir_router {
+
+    moderna::http::response<std::string> operator()(
+      const moderna::http::request<std::string> &request, std::string_view route
+    ) {
+      std::filesystem::path relative_path{route};
+      std::filesystem::path absolute_path = __root / route;
+      if (!std::filesystem::exists(absolute_path))
+        return response{
+          status::create<status_code::HTTP_404_NOT_FOUND>(), std::string{"No such directory"}
+        };
+      if (!std::filesystem::is_directory(absolute_path))
+        return response{
+          status::create<status_code::HTTP_400_BAD_REQUEST>(),
+          std::string{"The requested path is not a directory"}
+        };
+      struct dir_entry {
+        std::string name;
+        std::string full_name;
+        bool is_dir;
+      };
+      std::vector<dir_entry> entries;
+      std::ranges::transform(
+        std::filesystem::directory_iterator{absolute_path},
+        std::back_inserter(entries),
+        [&](auto &&path) {
+          auto file_name = path.path().filename();
+          return dir_entry{file_name, (relative_path / file_name).string(), path.is_directory()};
+        }
+      );
+      return response(
+        status::create<status_code::HTTP_200_OK>(),
+        header{header_view::make_from_line("Content-Type: application/json")},
+        rfl::json::write(entries)
+      );
+    }
+
+    static std::expected<dir_router, moderna::variant_error<is_a_directory_error>> create_router(
+      std::filesystem::path dir_path
+    ) {
+      if (!std::filesystem::is_directory(dir_path)) return std::unexpected{is_a_directory_error{}};
+      return dir_router{std::move(dir_path)};
+    }
+
+  private:
+    std::filesystem::path __root;
+    dir_router(std::filesystem::path root_dir) : __root{root_dir} {}
+  };
+
+  export template <
+    middleware_t<std::string, std::string> handler_t,
+    typename time_unit_t = std::chrono::milliseconds>
+  struct timer_middleware {
+    constexpr timer_middleware(handler_t handler) : handler{handler} {}
+
+    moderna::http::response<std::string> operator()(
+      const moderna::http::request<std::string> &request
+    ) {
+      auto beg = std::chrono::high_resolution_clock::now();
+      auto resp = handler(request);
+      auto end = std::chrono::high_resolution_clock::now();
+      std::print("{}\n", std::chrono::duration_cast<time_unit_t>(end - beg));
+      return resp;
+    }
+
+  private:
+    handler_t handler;
+  };
+
+  export template <middleware_t<std::string, std::string> handler_t> struct logger_middleware {
+    constexpr logger_middleware(handler_t handler) : handler{handler} {}
+
+    moderna::http::response<std::string> operator()(
+      const moderna::http::request<std::string> &request
+    ) {
+      auto beg = std::chrono::high_resolution_clock::now();
+      auto resp = handler(request);
+      auto end = std::chrono::high_resolution_clock::now();
+      std::print(
+        "{} {} {} {}ms\n",
+        request.method.method_name,
+        request.path.path,
+        resp.status.code(),
+        static_cast<float>(std::chrono::duration_cast<std::chrono::microseconds>(end - beg).count()
+        ) /
+          1000
+      );
+      return resp;
+    }
+
+  private:
+    handler_t handler;
+  };
+
+  export template <
+    typename req_body_t,
+    typename handler_t
+  >
+  struct json_middleware {
+    using req_t = moderna::http::request<req_body_t>;
+    using resp_body_t = decltype(std::invoke(
+      std::declval<handler_t>(), std::declval<req_t>(), std::declval<std::string_view>()
+    ));
+    using resp_t = moderna::http::response<resp_body_t>;
+    constexpr json_middleware(handler_t handler) : __handler{handler} {}
+
+    moderna::http::response<std::string> operator()(
+      const moderna::http::request<std::string> &req, std::string_view route
+    ) {
+      std::expected<req_t, variant_error<rfl::Error>> json_req = req.to_object<req_body_t>();
+      if (!json_req)
+        return moderna::http::response(
+          status::create<status_code::HTTP_400_BAD_REQUEST>(), json_req.error().what()
+        );
+      resp_t resp = std::invoke(__handler, json_req, route);
+      return resp.to_json();
+    }
+
+  private:
+    handler_t __handler;
+  };
+
+  constexpr auto method_middleware_method_not_found =
+    [](const moderna::http::request<std::string> &req, std::string_view route) {
+      return moderna::http::response{
+        moderna::http::status::create<moderna::http::status_code::HTTP_405_METHOD_NOT_ALLOWED>(), ""
+      };
+    };
+
+  template <typename provider_t>
+  concept is_get_method_provider = router_handler_t<decltype(std::declval<provider_t>().get)>;
+  template <typename provider_t>
+  concept is_post_method_provider = router_handler_t<decltype(std::declval<provider_t>().post)>;
+  template <typename provider_t>
+  concept is_put_method_provider = router_handler_t<decltype(std::declval<provider_t>().put)>;
+  template <typename provider_t>
+  concept is_patch_method_provider = router_handler_t<decltype(std::declval<provider_t>().patch)>;
+  template <typename provider_t>
+  concept is_delete_method_provider =
+    router_handler_t<decltype(std::declval<provider_t>().deleter)>;
+  template <typename provider_t>
+  concept is_head_method_provider = router_handler_t<decltype(std::declval<provider_t>().head)>;
+  template <typename provider_t>
+  concept is_options_method_provider =
+    router_handler_t<decltype(std::declval<provider_t>().options)>;
+
+  /*
+    Handles method branching.
+  */
+  export template <typename method_handler_t>
+    requires(is_get_method_provider<method_handler_t> || is_post_method_provider<method_handler_t> || is_put_method_provider<method_handler_t> || is_patch_method_provider<method_handler_t> || is_delete_method_provider<method_handler_t> || is_head_method_provider<method_handler_t> || is_options_method_provider<method_handler_t>)
+  struct method_middleware {
+    method_middleware(method_handler_t handler) : __handler{handler} {}
+    moderna::http::response<std::string> operator()(
+      const moderna::http::request<std::string> &req, std::string_view route
+    ) {
+      if (req.method.method_name == "GET" && is_get_method_provider<method_handler_t>)
+        return __handler.get(req, route);
+      else if (req.method.method_name == "POST" && is_post_method_provider<method_handler_t>)
+        return __handler.post(req, route);
+      else if (req.method.method_name == "PUT" && is_put_method_provider<method_handler_t>)
+        return __handler.put(req, route);
+      else if (req.method.method_name == "PATCH" && is_patch_method_provider<method_handler_t>)
+        return __handler.patch(req, route);
+      else if (req.method.method_name == "DELETE" && is_delete_method_provider<method_handler_t>)
+        return __handler.deleter(req, route);
+      else if (req.method.method_name == "HEAD" && is_head_method_provider<method_handler_t>)
+        return __handler.head(req, route);
+      else if (req.method.method_name == "OPTIONS" && is_options_method_provider<method_handler_t>)
+        return __handler.options(req, route);
+      else
+        return moderna::http::response{
+          moderna::http::status::create<moderna::http::status_code::HTTP_405_METHOD_NOT_ALLOWED>(),
+          std::string{""}
+        };
+    }
+
+  private:
+    method_handler_t __handler;
+  };
+}

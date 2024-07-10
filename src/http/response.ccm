@@ -1,32 +1,60 @@
 module;
+#include <expected>
 #include <format>
+#include <rfl/json.hpp>
 export module moderna.http:response;
+import moderna.variant_error;
+import :error;
 import :status;
 import :header;
 namespace moderna::http {
-  export struct response {
+  export template <typename body_t = std::string> struct response {
     status status;
     header header;
-    std::string data;
+    body_t data;
 
-    response(
-      moderna::http::status http_status, moderna::http::header http_header, std::string data
-    ) :
-      status{std::move(http_status)},
-      header{std::move(http_header)}, data{std::move(data)} {
+    response<std::string> to_json()
+      requires(!std::same_as<std::string, body_t>)
+    {
+      return response<std::string>{status, header, rfl::json::write(data)};
+    }
+    template <typename new_body_t>
+    std::expected<response<new_body_t>, variant_error<rfl::Error>> to_object()
+      requires(std::same_as<std::string, body_t>)
+    {
+      using expected_t = std::expected<response<new_body_t>, variant_error<parse_error>>;
+      rfl::Result<new_body_t> parsed = rfl::json::read<new_body_t>(data);
+      if (!parsed) return expected_t{std::unexpected{parsed.error().value()}};
+      return response<new_body_t>{status, header, parsed.value()};
+    }
+
+    response(moderna::http::status http_status, moderna::http::header http_header, body_t data) :
+      status{std::move(http_status)}, header{std::move(http_header)}, data{std::move(data)} {
       static_cast<void>(header.add_or_modify(
         header_view_no_content{"Content-Length"}.set_content(std::to_string((this->data).length()))
       ));
     }
+    response(moderna::http::status http_status, body_t data) :
+      status{http_status}, header{std::initializer_list<moderna::http::header_view>{}},
+      data{std::move(data)} {
+      if constexpr (std::convertible_to<std::string_view, body_t>) {
+        header.add_or_modify(header_view::make_from_line("Content-Type: text/plain"));
+        static_cast<void>(header.add_or_modify(header_view_no_content{"Content-Length"}.set_content(
+          std::to_string((this->data).length())
+        )));
+      } else {
+        header.add_or_modify(header_view::make_from_line("Content-Type: application/json"));
+      }
+    }
   };
 };
 
-template <> struct std::formatter<moderna::http::response> {
+template <> struct std::formatter<moderna::http::response<std::string>> {
   constexpr auto parse(std::format_parse_context &ctx) {
     return ctx.begin();
   }
   template <typename format_context>
-  auto format(const moderna::http::response &response, format_context &ctx) const {
+  auto format(const moderna::http::response<std::string> &response, format_context &ctx) const {
     std::format_to(
       ctx.out(),
       "HTTP/1.1 {} {}\r\n{}\r\n{}",

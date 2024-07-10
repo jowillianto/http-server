@@ -245,7 +245,8 @@ template <moderna::http::header_t header_e> struct std::formatter<header_e> {
     return ctx.begin();
   }
   template <class FormatContext> auto format(const header_e &obj, FormatContext &ctx) const {
-    return std::format_to(ctx.out(), "{}: {}", obj.name, obj.content);
+    std::format_to(ctx.out(), "{}: {}", obj.name, obj.content);
+    return ctx.out();
   }
 };
 template <> struct std::formatter<moderna::http::header> {

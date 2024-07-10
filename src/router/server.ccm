@@ -1,0 +1,61 @@
+module;
+#include <string>
+#include <expected>
+#include <system_error>
+#include <print>
+export module moderna.http.server;
+import moderna.io;
+import moderna.thread_plus;
+import moderna.http.middleware;
+import moderna.variant_error;
+import moderna.http;
+
+namespace moderna::http {
+  export template <moderna::http::middleware_t<std::string, std::string> handler_t> struct server {
+
+    server(moderna::io::listener_sock_file listener, handler_t handler, size_t thread_count) :
+      __listener{std::move(listener)},
+      __pool{std::make_unique<moderna::thread_plus::pool>(thread_count)}, __handler{handler} {
+      for (size_t i = 0; i < 10; i += 1) {
+        auto _ = __pool -> add_task([&]() {
+          while (true)
+            __listener.accept()
+              .transform_error([](auto &&e) {
+                return e.template cast_to<moderna::http::request_parse_error_t>();
+              })
+              .and_then([&](auto &&acceptor) {
+                return moderna::http::parse_request(acceptor.io).and_then([&](auto &&request) {
+                  auto resp = __handler(request);
+                  return acceptor.io.write(std::format("{}", resp)).transform_error([](auto &&e) {
+                    return e.template cast_to<moderna::http::request_parse_error_t>();
+                  });
+                });
+              })
+              .transform_error([](auto &&e) {
+                std::print(stderr, "{}\n", e.what());
+                return e;
+              });
+        });
+      }
+    }
+
+    void wait() {
+      __pool -> join();
+    }
+
+  private:
+    moderna::io::listener_sock_file __listener;
+    std::unique_ptr<moderna::thread_plus::pool> __pool;
+    handler_t __handler;
+  };
+
+  export template <moderna::http::middleware_t<std::string, std::string> handler_t>
+  std::expected<server<handler_t>, moderna::variant_error<std::system_error>> create_server(
+    handler_t handler, int port, int backlog, size_t thread_count
+  ) {
+    return moderna::io::listener_sock_file::create_tcp_listener(port, backlog)
+      .transform([&](auto &&listener) {
+        return server{std::move(listener), handler, thread_count};
+      });
+  }
+}

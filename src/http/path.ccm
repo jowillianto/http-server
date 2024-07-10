@@ -4,8 +4,8 @@ module;
 #include <string>
 #include <string_view>
 export module moderna.http:path;
-import :error;
 import moderna.variant_error;
+import :error;
 
 namespace moderna::http {
   export struct raw_path;

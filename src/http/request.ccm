@@ -3,8 +3,8 @@ module;
 #include <format>
 #include <ranges>
 #include <string_view>
-#include <system_error>
 #include <tuple>
+#include <rfl/json.hpp>
 export module moderna.http:request;
 import moderna.io;
 import moderna.variant_error;
@@ -59,11 +59,11 @@ namespace moderna::http {
   /*
     HTTP Request
   */
-  export struct request {
+  export template <typename body_t = std::string> struct request {
     method method;
     encoded_path path;
     header header;
-    std::string data;
+    body_t data;
 
     request(
       moderna::http::method http_method,
@@ -78,61 +78,78 @@ namespace moderna::http {
       ));
     }
 
-    /*
-      HTTP Content can be very big and it is recommended that parsing is not done all at once.
-    */
-    using error_t =
-      moderna::variant_error<std::system_error, parse_error, content_length_missing_error>;
-    template <moderna::io::readable_file_t file_t>
-    static std::expected<request, error_t> make(file_t &f) {
-      using expected_t = std::expected<request, error_t>;
-      /*
-        Read the first line and cast the error.
-      */
-      return f.readline()
-        .transform_error([](auto &&e) { return e.template cast_to<error_t>(); })
-        .and_then([&](auto &&first_line) {
-          return parse_first_line(std::move(first_line)).transform_error([](auto &&e) {
-            return e.template cast_to<error_t>();
-          });
-        })
-        .and_then([&](auto &&header_path_tuple) {
-          /*
-            Parse the http header
-          */
-          return f.read_line_until([&](auto &&line) { return line == "\r\n"; })
-            .transform_error([](auto &&e) { return e.template cast_to<error_t>(); })
-            .and_then([&](auto &&lines) {
-              return header::make_from_lines(std::ranges::subrange(lines.begin(), lines.end() - 1))
-                .transform_error([](auto &&e) { return e.template cast_to<error_t>(); })
-                .and_then([&](auto &&header) {
-                  // Read the content length from the header
-                  auto content_length = header.get("Content-Length");
-                  size_t i = 0;
-                  if (content_length) i = std::atoi((content_length->content).data());
-                  return f.read_n(i)
-                    .transform_error([](auto &&e) { return e.template cast_to<error_t>(); })
-                    .transform([&](auto &&request_body) {
-                      return request{
-                        std::get<0>(header_path_tuple),
-                        std::get<1>(header_path_tuple),
-                        header,
-                        request_body
-                      };
-                    });
-                });
-            });
-        });
+    request<std::string> to_json()
+      requires(!std::same_as<std::string, body_t>)
+    {
+      return request<std::string>{method, path, header, rfl::json::write(data)};
+    }
+    template <typename new_body_t>
+    std::expected<request<new_body_t>, variant_error<rfl::Error>> to_object()
+      requires(std::same_as<std::string, body_t>)
+    {
+      using expected_t = std::expected<request<new_body_t>, variant_error<parse_error>>;
+      rfl::Result<new_body_t> parsed = rfl::json::read<new_body_t>(data);
+      if (!parsed) return expected_t{std::unexpected{parsed.error().value()}};
+      return request<new_body_t>{method, path, header, parsed.value()};
     }
   };
+
+  /*
+      HTTP Content can be very big and it is recommended that parsing is not done all at once.
+    */
+  export using request_parse_error_t =
+    moderna::variant_error<std::system_error, parse_error, content_length_missing_error>;
+  export template <moderna::io::readable_file_t file_t>
+  std::expected<request<std::string>, request_parse_error_t> parse_request(file_t &f) {
+    using expected_t = std::expected<request<std::string>, request_parse_error_t>;
+    /*
+      Read the first line and cast the error.
+    */
+    return f.readline()
+      .transform_error([](auto &&e) { return e.template cast_to<request_parse_error_t>(); })
+      .and_then([&](auto &&first_line) {
+        return parse_first_line(std::move(first_line)).transform_error([](auto &&e) {
+          return e.template cast_to<request_parse_error_t>();
+        });
+      })
+      .and_then([&](auto &&header_path_tuple) {
+        /*
+          Parse the http header
+        */
+        return f.read_line_until([&](auto &&line) { return line == "\r\n"; })
+          .transform_error([](auto &&e) { return e.template cast_to<request_parse_error_t>(); })
+          .and_then([&](auto &&lines) {
+            return header::make_from_lines(std::ranges::subrange(lines.begin(), lines.end() - 1))
+              .transform_error([](auto &&e) { return e.template cast_to<request_parse_error_t>(); })
+              .and_then([&](auto &&header) {
+                // Read the content length from the header
+                auto content_length = header.get("Content-Length");
+                size_t i = 0;
+                if (content_length) i = std::atoi((content_length->content).data());
+                return f.read_n(i)
+                  .transform_error([](auto &&e) {
+                    return e.template cast_to<request_parse_error_t>();
+                  })
+                  .transform([&](auto &&request_body) {
+                    return request{
+                      std::get<0>(header_path_tuple),
+                      std::get<1>(header_path_tuple),
+                      header,
+                      request_body
+                    };
+                  });
+              });
+          });
+      });
+  }
 }
 
-template <> struct std::formatter<moderna::http::request> {
+template <> struct std::formatter<moderna::http::request<std::string>> {
   constexpr auto parse(std::format_parse_context &ctx) {
     return ctx.begin();
   }
   template <typename format_context>
-  auto format(const moderna::http::request &request, format_context &ctx) const {
+  auto format(const moderna::http::request<std::string> &request, format_context &ctx) const {
     std::format_to(
       ctx.out(),
       "{} {} HTTP/1.1\r\n{}\r\n{}",

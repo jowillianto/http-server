@@ -14,6 +14,7 @@ if (NOT TARGET ${PROJECT_NAME})
   add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/libs/variant_error)
   add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../io io)
   add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/libs/reflect-cpp)
+  add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../thread-plus thread-plus)
   add_library (${PROJECT_NAME})
   target_sources(${PROJECT_NAME}
     PUBLIC
@@ -26,20 +27,26 @@ if (NOT TARGET ${PROJECT_NAME})
       ${CURL_LIBRARIES} 
       moderna_variant_error
       moderna_io
+      moderna_thread_plus
       reflectcpp
   )
 endif()
 
 if (EXISTS "${CMAKE_CURRENT_LIST_DIR}/../test-lib/CMakeLists.txt" AND PROJECT_IS_TOP_LEVEL)
   add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../test-lib test-lib)
-  add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../thread-plus test-plus)
   include (CTest)
-  moderna_add_test(http_tests ${CMAKE_CURRENT_LIST_DIR}/tests/http_tests.cpp
-    LIBRARIES moderna_http moderna_test_lib
+  moderna_add_test(http_tests 
+    ${CMAKE_CURRENT_LIST_DIR}/tests/http_tests.cpp
+    LIBRARIES ${PROJECT_NAME} moderna_test_lib
     SANITIZERS all
   )
-  moderna_add_test(http_example ${CMAKE_CURRENT_LIST_DIR}/main.cpp
-    LIBRARIES moderna_http moderna_io moderna_thread_plus
+  moderna_add_test(main 
+    ${CMAKE_CURRENT_LIST_DIR}/main.cpp
+    LIBRARIES ${PROJECT_NAME} moderna_io moderna_thread_plus
+  )
+  moderna_add_test(http_example 
+    ${CMAKE_CURRENT_LIST_DIR}/tests/http_example.cpp
+    LIBRARIES ${PROJECT_NAME}
   )
 elseif (PROJECT_IS_TOP_LEVEL)
   message ( "Clone Moderna Library to Test")

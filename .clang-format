@@ -6,7 +6,7 @@ ConstructorInitializerIndentWidth: 2
 IndentCaseLabels: true
 PenaltyReturnTypeOnItsOwnLine: 200
 UseTab: Never
-SortIncludes: true
+SortIncludes: false
 SortUsingDeclarations: false
 AlignConsecutiveMacros: false
 AlignEscapedNewlines: DontAlign
