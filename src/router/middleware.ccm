@@ -11,6 +11,9 @@ export module moderna.http.middleware;
 import moderna.http;
 import moderna.variant_error;
 namespace moderna::http {
+  /*
+    defines an invocable that handles a request<std::string> and a path
+  */
   export template <typename handler_t>
   concept router_handler_t = requires(handler_t handler) {
     {
@@ -20,11 +23,20 @@ namespace moderna::http {
       )
     } -> std::same_as<moderna::http::response<std::string>>;
   };
+  /*
+    defines a middleware that handles a request<req_body_t>
+  */
+  export template <typename handler_t, typename req_body_t>
+  concept middleware_accept_t =
+    std::is_invocable_v<handler_t, const moderna::http::request<req_body_t> &>;
+  /*
+    defines a middleware that handles a request<req_body_t> and validates the response
+  */
   export template <typename handler_t, typename req_body_t, typename resp_body_t = req_body_t>
   concept middleware_t = std::is_invocable_r_v<
-    moderna::http::response<std::string>,
+    moderna::http::response<resp_body_t>,
     handler_t,
-    const moderna::http::request<std::string> &>;
+    const moderna::http::request<req_body_t> &>;
 
   template <router_handler_t F> struct route_handler {
     F handler;
@@ -106,77 +118,6 @@ namespace moderna::http {
       return "the given path is a directory";
     }
   };
-  /*
-    this routes to directories after a root directory
-  */
-  export struct dir_router {
-
-    moderna::http::response<std::string> operator()(
-      const moderna::http::request<std::string> &request, std::string_view route
-    ) {
-      std::filesystem::path relative_path{route};
-      std::filesystem::path absolute_path = __root / route;
-      if (!std::filesystem::exists(absolute_path))
-        return response{
-          status::create<status_code::HTTP_404_NOT_FOUND>(), std::string{"No such directory"}
-        };
-      if (!std::filesystem::is_directory(absolute_path))
-        return response{
-          status::create<status_code::HTTP_400_BAD_REQUEST>(),
-          std::string{"The requested path is not a directory"}
-        };
-      struct dir_entry {
-        std::string name;
-        std::string full_name;
-        bool is_dir;
-      };
-      std::vector<dir_entry> entries;
-      std::ranges::transform(
-        std::filesystem::directory_iterator{absolute_path},
-        std::back_inserter(entries),
-        [&](auto &&path) {
-          auto file_name = path.path().filename();
-          return dir_entry{file_name, (relative_path / file_name).string(), path.is_directory()};
-        }
-      );
-      return response(
-        status::create<status_code::HTTP_200_OK>(),
-        header{header_view::make_from_line("Content-Type: application/json")},
-        rfl::json::write(entries)
-      );
-    }
-
-    static std::expected<dir_router, moderna::variant_error<is_a_directory_error>> create_router(
-      std::filesystem::path dir_path
-    ) {
-      if (!std::filesystem::is_directory(dir_path)) return std::unexpected{is_a_directory_error{}};
-      return dir_router{std::move(dir_path)};
-    }
-
-  private:
-    std::filesystem::path __root;
-    dir_router(std::filesystem::path root_dir) : __root{root_dir} {}
-  };
-
-  export template <
-    middleware_t<std::string, std::string> handler_t,
-    typename time_unit_t = std::chrono::milliseconds>
-  struct timer_middleware {
-    constexpr timer_middleware(handler_t handler) : handler{handler} {}
-
-    moderna::http::response<std::string> operator()(
-      const moderna::http::request<std::string> &request
-    ) {
-      auto beg = std::chrono::high_resolution_clock::now();
-      auto resp = handler(request);
-      auto end = std::chrono::high_resolution_clock::now();
-      std::print("{}\n", std::chrono::duration_cast<time_unit_t>(end - beg));
-      return resp;
-    }
-
-  private:
-    handler_t handler;
-  };
 
   export template <middleware_t<std::string, std::string> handler_t> struct logger_middleware {
     constexpr logger_middleware(handler_t handler) : handler{handler} {}
@@ -203,18 +144,20 @@ namespace moderna::http {
     handler_t handler;
   };
 
+  template <typename T> struct req_t {};
+  template <typename T> constexpr req_t<T> req;
   export template <
     typename req_body_t,
-    typename handler_t
-  >
+    typename resp_body_t,
+    middleware_t<req_body_t, resp_body_t> handler_t>
   struct json_middleware {
-    using req_t = moderna::http::request<req_body_t>;
-    using resp_body_t = decltype(std::invoke(
-      std::declval<handler_t>(), std::declval<req_t>(), std::declval<std::string_view>()
-    ));
-    using resp_t = moderna::http::response<resp_body_t>;
-    constexpr json_middleware(handler_t handler) : __handler{handler} {}
+    constexpr json_middleware(
+      handler_t handler, req_t<req_body_t> req_type = {}, req_t<resp_body_t> resp_type = {}
+    ) :
+      __handler{handler} {}
 
+    using req_t = moderna::http::request<req_body_t>;
+    using resp_t = moderna::http::response<resp_body_t>;
     moderna::http::response<std::string> operator()(
       const moderna::http::request<std::string> &req, std::string_view route
     ) {
@@ -230,13 +173,6 @@ namespace moderna::http {
   private:
     handler_t __handler;
   };
-
-  constexpr auto method_middleware_method_not_found =
-    [](const moderna::http::request<std::string> &req, std::string_view route) {
-      return moderna::http::response{
-        moderna::http::status::create<moderna::http::status_code::HTTP_405_METHOD_NOT_ALLOWED>(), ""
-      };
-    };
 
   template <typename provider_t>
   concept is_get_method_provider = router_handler_t<decltype(std::declval<provider_t>().get)>;
